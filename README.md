@@ -13,9 +13,13 @@ retrieval / math / weather / small talk) → a **token-by-token streaming** answ
 | **Streaming output** | SSE token-by-token output with a live elapsed-time counter; retrieved content is rendered in its own block so the process is visible |
 | **Determinism first** | If code can do something deterministically (retrieval), the model is not asked to judge it. The model only does what it is good at — understanding semantics and extracting arguments |
 
-> This project is a **v1 rewrite** of a classic ReAct implementation
-> (Flask + LangChain classic + Ollama + RAG), used to compare the design differences between
-> the two generations of Agent APIs. The original lives in `D:\agent`.
+## Demo
+
+<img src="docs/images/demo-ui.png" alt="Chat UI: the retrieved-knowledge block, the streamed answer, and the elapsed-time badge" width="520">
+
+The screenshot above is one concept question end to end: the retrieved chunks at the top
+(**2 chunks, fully readable**), the streamed answer below them, and at the bottom the
+elapsed-time badge (`31.3s`, amber) together with the mode badge (`Agent`, blue).
 
 ---
 
@@ -215,6 +219,13 @@ def route(question):
 | **Degrade to the tier you are sure about** | If Jev fails we **never** fall back to "a three-tool agent deciding on its own" (only ~1/3 correct). We fall back to the **always-reliable** local rules |
 
 ### 5. Results
+
+Here is a real server log — what it looks like when both **Jev routing** and **pre-retrieval** fire:
+
+![Server log: Jev routed the question to knowledge with confidence 1.0, then pre-retrieval found 2 chunks](docs/images/demo-router-log.png)
+
+The three lines are: where the routing came from (Jev), the routing result (`knowledge`, confidence
+`1.0`), and the pre-retrieval result (2 chunks, 623 characters).
 
 #### ① Routing accuracy: 6 / 6, all with confidence 1.0
 
