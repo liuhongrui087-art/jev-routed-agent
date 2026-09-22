@@ -83,7 +83,6 @@
     display: flex;
     flex-direction: column;
     gap: 18px;
-    scroll-behavior: smooth;
   }
   .chat::-webkit-scrollbar { width: 8px; }
   .chat::-webkit-scrollbar-thumb { background: #d7dce4; border-radius: 4px; }
@@ -123,6 +122,7 @@
     border-radius: var(--radius);
     white-space: pre-wrap;
     word-break: break-word;
+    align-self: stretch;
   }
   .user .bubble {
     background: var(--accent);
@@ -134,6 +134,38 @@
     border: 1px solid var(--border);
     border-bottom-left-radius: 4px;
   }
+
+  /* ---------- 检索内容区块 ---------- */
+  .tool-block {
+    align-self: stretch;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: #fbfcfe;
+    overflow: hidden;
+    margin-bottom: 8px;
+  }
+  .tool-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px;
+    padding: 8px 12px;
+    background: #f2f5fa;
+    border-bottom: 1px solid var(--border);
+    font-size: 12.5px;
+    color: var(--text-dim);
+  }
+  .tool-name { color: #1d4ed8; font-weight: 600; }
+  .tool-body {
+    padding: 10px 12px;
+    max-height: 200px;
+    overflow-y: auto;
+    font-size: 13px;
+    line-height: 1.65;
+    color: #4a5261;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .tool-body::-webkit-scrollbar { width: 6px; }
+  .tool-body::-webkit-scrollbar-thumb { background: #d7dce4; border-radius: 3px; }
 
   /* ---------- 元信息徽章 ---------- */
   .meta { display: flex; align-items: center; gap: 6px; margin-top: 8px; padding-left: 2px; }
@@ -269,7 +301,6 @@
     chat.scrollTop = chat.scrollHeight;
   }
 
-  // 用 HTML 字符串造一个元素，避免到处写 createElement
   function make(html) {
     const tpl = document.createElement('template');
     tpl.innerHTML = html.trim();
@@ -305,25 +336,44 @@
     return 'vslow';
   }
 
-  function buildAnswer(text, data) {
-    const node = make('<div class="msg bot"><div class="bubble"></div><div class="meta"></div></div>');
-    node.querySelector('.bubble').textContent = text;
-    const meta = node.querySelector('.meta');
-
-    if (data && typeof data.elapsed === 'number') {
+  // 把耗时和模式徽章加进 .meta 容器
+  function addBadges(meta, elapsed, usedAgent) {
+    if (typeof elapsed === 'number') {
       const t = document.createElement('span');
-      t.className = 'badge ' + speedClass(data.elapsed);
-      t.textContent = '耗时 ' + data.elapsed.toFixed(1) + 's';
+      t.className = 'badge ' + speedClass(elapsed);
+      t.textContent = '耗时 ' + elapsed.toFixed(1) + 's';
       meta.appendChild(t);
     }
-
-    if (data && typeof data.used_agent === 'boolean') {
+    if (typeof usedAgent === 'boolean') {
       const m = document.createElement('span');
-      m.className = 'badge ' + (data.used_agent ? 'agent' : 'fallback');
-      m.textContent = data.used_agent ? 'Agent 模式' : '降级回答';
+      m.className = 'badge ' + (usedAgent ? 'agent' : 'fallback');
+      m.textContent = usedAgent ? 'Agent 模式' : '降级回答';
       meta.appendChild(m);
     }
+  }
 
+  // 检索内容区块
+  function buildToolBlock(name, content) {
+    const node = make(
+      '<div class="tool-block">' +
+        '<div class="tool-head">' +
+          '<span class="tool-name"></span>' +
+          '<span class="tool-count"></span>' +
+        '</div>' +
+        '<div class="tool-body"></div>' +
+      '</div>'
+    );
+    const label = name === 'search_knowledge' ? '检索知识库' : name;
+    const segs = content.split('\n---\n').filter(function (s) { return s.trim(); });
+    node.querySelector('.tool-name').textContent = '📚 ' + label;
+    node.querySelector('.tool-count').textContent = segs.length + ' 个片段';
+    node.querySelector('.tool-body').textContent = content;
+    return node;
+  }
+
+  function buildPlain(text) {
+    const node = make('<div class="msg bot"><div class="bubble"></div></div>');
+    node.querySelector('.bubble').textContent = text;
     return node;
   }
 
@@ -337,31 +387,102 @@
     addUser(question);
     const thinking = addThinking();
 
-    // 等待期间实时跳动，避免用户以为页面卡死
+    // 等待期间实时跳动，避免长耗时被误认为卡死
     const timerEl = thinking.querySelector('[data-timer]');
     const t0 = performance.now();
-    const timer = setInterval(() => {
+    const timer = setInterval(function () {
       timerEl.textContent = ((performance.now() - t0) / 1000).toFixed(1) + 's';
     }, 100);
 
+    // 流式过程中逐步构建的回答容器
+    const botNode = make('<div class="msg bot"><div class="bubble"></div><div class="meta"></div></div>');
+    const botBubble = botNode.querySelector('.bubble');
+    const botMeta = botNode.querySelector('.meta');
+    let answer = '';
+    let switched = false;
+
+    // 第一个事件到达时，把「思考中」换成真正的回答容器
+    function activate() {
+      if (!switched) {
+        switched = true;
+        if (thinking.parentNode) thinking.replaceWith(botNode);
+      }
+    }
+
+    function handleEvent(evt) {
+      if (evt.type === 'reset') {
+        // 模型在调工具，之前流出的"我查一下"这类过渡语要作废
+        activate();
+        answer = '';
+        botBubble.textContent = '';
+      } else if (evt.type === 'tool') {
+        activate();
+        botNode.insertBefore(buildToolBlock(evt.name, evt.content), botBubble);
+        scrollDown();
+      } else if (evt.type === 'token') {
+        activate();
+        answer += evt.text;
+        botBubble.textContent = answer;
+        scrollDown();
+      } else if (evt.type === 'done') {
+        activate();
+        clearInterval(timer);
+        addBadges(botMeta, evt.elapsed, true);
+      } else if (evt.type === 'error') {
+        activate();
+        botBubble.textContent = '出错了：' + evt.message;
+      }
+    }
+
     try {
-      const resp = await fetch('/query', {
+      const resp = await fetch('/query/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question: question })
       });
-      const data = await resp.json();
-      clearInterval(timer);
 
       if (!resp.ok) {
-        thinking.replaceWith(buildAnswer(data.error || ('请求失败 HTTP ' + resp.status), null));
-      } else {
-        thinking.replaceWith(buildAnswer(data.answer, data));
+        const data = await resp.json().catch(function () { return {}; });
+        clearInterval(timer);
+        thinking.replaceWith(buildPlain(data.error || ('请求失败 HTTP ' + resp.status)));
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      while (true) {
+        const step = await reader.read();
+        if (step.done) break;
+        buffer += decoder.decode(step.value, { stream: true });
+
+        // 按 SSE 的事件分隔符切开，最后一段可能不完整，留到下一轮
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop();
+
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line || line.indexOf('data:') !== 0) continue;
+          let evt;
+          try {
+            evt = JSON.parse(line.slice(5).trim());
+          } catch (e) {
+            continue;
+          }
+          handleEvent(evt);
+        }
       }
     } catch (err) {
       clearInterval(timer);
-      thinking.replaceWith(buildAnswer('网络错误：' + err.message, null));
+      if (thinking.parentNode) thinking.replaceWith(buildPlain('网络错误：' + err.message));
+      else {
+        activate();
+        botBubble.textContent = '网络错误：' + err.message;
+      }
     } finally {
+      clearInterval(timer);
+      if (thinking.parentNode) thinking.remove();
       busy = false;
       sendBtn.disabled = false;
       input.focus();

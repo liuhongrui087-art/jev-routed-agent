@@ -24,7 +24,7 @@ from core.llm import get_chat_llm
 
 
 def handle_question(question: str) -> dict:
-    """回答一个问题，并返回本次调用的元信息。
+    """回答一个问题，并返回本次调用的元信息（非流式）。
 
     返回：
         {
@@ -60,3 +60,65 @@ def handle_question(question: str) -> dict:
     elapsed = round(time.time() - t0, 1)
     print(f"[qa] q={question[:30]!r} agent_used={used_agent} elapsed={elapsed}s")
     return {"answer": answer, "elapsed": elapsed, "used_agent": used_agent}
+
+
+def stream_question(question: str):
+    """流式回答，逐步 yield 事件字典（供 SSE 使用）。
+
+    事件类型：
+        {"type": "start"}
+        {"type": "reset"}                               # 作废前面已显示的文字
+        {"type": "tool", "name": str, "content": str}   # 工具执行结果（检索内容）
+        {"type": "token", "text": str}                  # 答案的增量文本
+        {"type": "done", "elapsed": float}
+        {"type": "error", "message": str}
+
+    处理「第一轮过渡语」的方式：
+        Agent 决定调工具时，往往先吐一句"我查一下资料"之类的过渡语。
+        chunk 里一旦出现 tool_call_chunks，说明这一轮在调工具，
+        此时发一个 reset 事件，让前端把已显示的文字作废。
+        （早先的写法是把所有 token 先缓存起来，但那会导致
+          "不调工具的回答"也要等整段生成完才一次性吐出，失去流式效果。）
+    """
+    t0 = time.time()
+    yield {"type": "start"}
+
+    tool_started = False
+
+    try:
+        for mode, payload in get_agent().stream(
+            {"messages": [{"role": "user", "content": question}]},
+            config={"recursion_limit": config.AGENT_MAX_ITERATIONS * 2},
+            stream_mode=["messages", "updates"],     # messages 拿 token，updates 拿工具结果
+        ):
+            if mode == "messages":
+                chunk = payload[0] if isinstance(payload, tuple) else payload
+
+                # 这一轮在生成工具调用 → 前面流出的都是过渡语，作废
+                if getattr(chunk, "tool_call_chunks", None):
+                    if not tool_started:
+                        tool_started = True
+                        yield {"type": "reset"}
+                    continue
+
+                text = getattr(chunk, "content", "") or ""
+                if text:
+                    yield {"type": "token", "text": text}
+
+            elif mode == "updates" and isinstance(payload, dict):
+                # 遍历所有节点，不硬编码 "model" / "tools" 这些名字
+                for update in payload.values():
+                    if not isinstance(update, dict):
+                        continue
+                    for msg in update.get("messages", []):
+                        if type(msg).__name__ == "ToolMessage":
+                            yield {
+                                "type": "tool",
+                                "name": getattr(msg, "name", "tool"),
+                                "content": msg.content,
+                            }
+
+    except Exception as e:
+        yield {"type": "error", "message": f"{type(e).__name__}: {e}"}
+
+    yield {"type": "done", "elapsed": round(time.time() - t0, 1)}
