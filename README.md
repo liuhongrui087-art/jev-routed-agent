@@ -1,4 +1,4 @@
-# LangChain v1 多步骤推理机器人
+# 基于jev+Flask+Ollama+LangChain v1 多步骤推理机器人
 
 基于 **LangChain v1** + **Flask** + **Ollama** + **jev**的多步骤推理机器人。
 
