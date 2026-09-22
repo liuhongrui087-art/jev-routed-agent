@@ -1,0 +1,35 @@
+# ========== 虚拟环境（1.4 万个文件，绝不能提交）==========
+venv/
+.venv/
+env/
+
+# ========== Python 缓存 ==========
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# ========== 向量库（可重建，体积大）==========
+.chroma/
+.chroma_old/
+.chroma_test/
+
+# ========== 知识库 PDF（体积大，克隆后自行下载）==========
+# d2l-zh 全本 32MB + 拆分后 46MB，不适合入库
+# 下载地址：https://zh-v2.d2l.ai/d2l-zh.pdf
+knowledge/
+knowledge_full/
+
+
+
+# ========== AI 工作记录 ==========
+.workbuddy/
+
+# ========== 项目文档（本地保留，不入库）==========
+项目要点总结.md
+
+# ========== IDE / 系统 ==========
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

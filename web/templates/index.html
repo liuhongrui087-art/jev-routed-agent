@@ -1,0 +1,15 @@
+<form id="f"><input id="q"><button>提问</button></form>
+<div id="a"></div>
+<script>
+document.getElementById('f').onsubmit = async (e) => {
+  e.preventDefault();
+  const question = document.getElementById('q').value;
+  const r = await fetch('/query', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},   // ← 少了这行后端收不到 JSON
+    body: JSON.stringify({question})
+  });
+  const data = await r.json();
+  document.getElementById('a').textContent = data.answer || data.error;
+};
+</script>
