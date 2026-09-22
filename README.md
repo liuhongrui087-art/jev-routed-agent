@@ -1,117 +1,126 @@
-# 基于jev+Flask+Ollama+LangChain v1 多步骤推理机器人
+# jev-routed-agent
+**English** | [简体中文](README.zh-CN.md)
+A multi-step reasoning agent built with **LangChain v1** + **Jev** + **Flask** + **Ollama**.
 
-基于 **LangChain v1** + **Flask** + **Ollama** + **jev**的多步骤推理机器人。
+User question → the routing layer determines the intent → the matching pipeline (knowledge-base
+retrieval / math / weather / small talk) → a **token-by-token streaming** answer backed by sources.
 
-用户提问 → 路由层判断意图 → 走对应的处理链（知识库检索 / 数学计算 / 天气查询 / 闲聊）
-→ **逐字流式**返回有依据的中文答案。
+**Three key features**:
 
-**三个主要特点**：
-
-| 特点 | 说明 |
+| Feature | Description |
 |---|---|
-| **Jev 决策路由** | 用专门的**决策模型**做意图判断，把"该用哪个工具"从生成模型里剥离出来。实测路由准确率 **6/6、置信度 1.0**，让这个环节从"概率性"变成"确定性"。详见下文《核心特性：Jev 决策路由》 |
-| **流式输出** | SSE 逐字返回，等待期间有实时计时器；检索内容单独成块展示，过程可见 |
-| **确定性优先** | 代码能确定完成的（检索）就不交给模型判断；模型只做它擅长的（理解语义、抽取参数） |
+| **Jev decision routing** | A dedicated **decision model** makes the intent judgement, taking "which tool to use" out of the generative model. Measured routing accuracy **6/6 with confidence 1.0**, turning this step from probabilistic into deterministic. See the *Core feature: Jev decision routing* section below |
+| **Streaming output** | SSE token-by-token output with a live elapsed-time counter; retrieved content is rendered in its own block so the process is visible |
+| **Determinism first** | If code can do something deterministically (retrieval), the model is not asked to judge it. The model only does what it is good at — understanding semantics and extracting arguments |
 
+> This project is a **v1 rewrite** of a classic ReAct implementation
+> (Flask + LangChain classic + Ollama + RAG), used to compare the design differences between
+> the two generations of Agent APIs. The original lives in `D:\agent`.
 
 ---
 
-## 技术栈
+## Tech stack
 
-| 层 | 技术 |
+| Layer | Technology |
 |---|---|
-| Agent | LangChain v1 —— `create_agent`（原生 tool calling） |
-| 底层运行时 | LangGraph（`create_agent` 返回的是一张已编译的图） |
-| 对话模型 | Ollama `qwen2.5:3b` |
-| 嵌入模型 | Ollama `bge-m3`（1024 维，中文友好） |
-| 向量库 | ChromaDB，持久化到 `.chroma/` |
-| 路由模型 | Jev（TypeSafe System One）—— 可选，不可用时自动降级为本地规则 |
-| Web | Flask 3 + 蓝图，SSE 流式 |
+| Agent | LangChain v1 — `create_agent` (native tool calling) |
+| Runtime underneath | LangGraph (`create_agent` returns a compiled graph) |
+| Chat model | Ollama `qwen2.5:3b` |
+| Embedding model | Ollama `bge-m3` (1024-dim, good for Chinese) |
+| Vector store | ChromaDB, persisted to `.chroma/` |
+| Routing model | Jev (TypeSafe System One) — optional; falls back to local rules when unavailable |
+| Web | Flask 3 with blueprints, SSE streaming |
 
 ---
 
-## 架构
+## Architecture
 
-依赖单向：`web → services → core → config.py`，`core/` 内**禁止出现任何 HTTP 相关代码**。
+Dependencies flow one way: `web → services → core → config.py`.
+**No HTTP-related code is allowed inside `core/`.**
 
 ```
-浏览器
+Browser
   │  POST /query/stream   (SSE)
   ▼
-web/routes.py               接口层：只管 HTTP（收请求、校验、序列化）
+web/routes.py               Interface layer: HTTP only (receive, validate, serialize)
   ▼
-services/qa_service.py      编排层：路由分发 + 超时 + 降级
+services/qa_service.py      Orchestration layer: route dispatch + timeout + fallback
   ▼
-services/router.py          路由层：Jev 优先 → 本地规则兜底
+services/router.py          Routing layer: Jev first → local rules as fallback
   │
-  ├─ knowledge  ─▶ 代码直接检索 ─▶ 裸 LLM + RAG 模板      （1 次 LLM，确定性）
-  ├─ calculator ─▶ 单工具 Agent（只带 calculator）        （2 次 LLM）
-  ├─ weather    ─▶ 单工具 Agent（只带 get_weather）       （2 次 LLM）
-  └─ chat       ─▶ 裸 LLM，不带任何工具                    （1 次 LLM）
+  ├─ knowledge  ─▶ code retrieves directly ─▶ bare LLM + RAG template   (1 LLM call, deterministic)
+  ├─ calculator ─▶ single-tool agent (calculator only)                  (2 LLM calls)
+  ├─ weather    ─▶ single-tool agent (get_weather only)                 (2 LLM calls)
+  └─ chat       ─▶ bare LLM, no tools                                   (1 LLM call)
   ▼
-core/                       能力层
-  ├── agent_builder.py       按路线组装并缓存 Agent
-  ├── tools.py               三个工具：calculator / get_weather / search_knowledge
-  ├── rag.py                 知识库索引与检索
-  ├── llm.py                 模型工厂
-  └── prompts.py             四套专用提示词 + 兜底提示词
+core/                       Capability layer
+  ├── agent_builder.py       Builds and caches one agent per route
+  ├── tools.py               Three tools: calculator / get_weather / search_knowledge
+  ├── rag.py                 Index building and retrieval
+  ├── llm.py                 Model factory
+  └── prompts.py             Four task-specific prompts + a fallback prompt
   ▼
-Ollama（qwen2.5:3b 对话 / bge-m3 嵌入）
+Ollama (qwen2.5:3b for chat / bge-m3 for embeddings)
 ```
 
-**为什么要分四条路**：本地 3b 模型在"三个工具里该选哪个"这件事上成功率只有约 1/3。
-把路由决策交给专门模型后，每条路**只带一个工具、只配一套提示词** —— 模型不需要"选"，
-只需要"填参数"。
+**Why four routes?** The local 3b model only picks the right tool out of three about **one third
+of the time**. Once routing is delegated to a dedicated model, each route carries
+**exactly one tool and exactly one prompt** — the model no longer has to *choose*,
+it only has to *fill in arguments*.
 
 ---
 
-## 核心特性：Jev 决策路由
+## Core feature: Jev decision routing
 
-> 这是本项目相对一般 Agent / RAG 项目最主要的差异点。
+> This is the main difference between this project and a typical Agent / RAG project.
 
-### 1. 为什么要引入它
+### 1. Why it was introduced
 
-本地 `qwen2.5:3b` 需要在一个 prompt 里同时完成四件事：
+The local `qwen2.5:3b` was being asked to do four things inside a single prompt:
 
 ```
-判断「该不该用工具」 → 选择「用哪个」 → 构造「参数怎么写」 → 生成「最终答案」
-        └──────── 这四步里，前三步都是决策，只有最后一步是生成 ────────┘
+Decide "should I use a tool?" → Choose "which one?" → Build "what arguments?" → Generate "the answer"
+        └──────────── three of these four are decisions; only the last is generation ────────┘
 ```
 
-实测结果是：**同一句「什么是过拟合」，时对时错**，成功率约 **1/3**。
-原因不是配置写错，而是**模型的先验分布问题** ——
+What we measured: **the same question "什么是过拟合" succeeded sometimes and failed other times**,
+roughly a **1 in 3** success rate. The cause was not a misconfiguration — it was the
+**model's prior distribution**:
 
-- 通用对话模型的训练语料里，"问概念 → 直接解释"的样本**海量存在**，
-  而"先调工具再回答"的样本占比**极低**
-- 系统提示词能提供一层条件化偏置，把倾向往"调工具"推，
-  但 3b 的容量不足以让这个推力**稳定压过先验**
-- 于是每次生成都在"推力 vs 先验"之间角力，结果**概率性地成功或失败**
+- In the training data of a general chat model, "user asks about a concept → model explains it
+  directly" is **extremely common**, while "call a tool first, then answer" is **rare**
+- A system prompt provides a layer of conditional bias that nudges the model towards calling tools,
+  but a 3b model does not have the capacity for that nudge to **reliably outweigh the prior**
+- So every generation is a tug-of-war between the nudge and the prior, and the outcome is
+  **probabilistic**
 
-更麻烦的是：**这个失败是静默的**。模型不会报错，它会若无其事地凭记忆编一个答案。
+Worse: **the failure is silent**. The model does not raise an error — it calmly makes up an answer
+from memory.
 
-### 2. Jev 是什么
+### 2. What Jev is
 
-**Jev = TypeSafe AI 的 System One 决策模型**（2026 年 9 月发布）。
+**Jev = the System One decision model from TypeSafe AI** (released September 2026).
 
-它的定位与普通 LLM 完全不同：
+Its positioning is completely different from a general-purpose LLM:
 
-> **面向软件的概率化决策模型。输入一段 state，输出带概率的类型化答案 —— 不生成自由文本。**
+> **A probabilistic decision model for software. It takes a state and returns typed answers with
+> probabilities — it does not generate free-form text.**
 
-| | 普通 LLM 做决策 | **Jev** |
+| | A general LLM making decisions | **Jev** |
 |---|---|---|
-| 输出形态 | 生成一段文本 / 结构化 JSON | **类型化字段 + 概率** |
-| 需要解析吗 | 需要，而且还要处理格式跑偏 | **不需要** |
-| 有没有置信度 | 没有 | **有 `confidence` 和完整概率分布** |
-| 会不会幻觉 | 会 | **不生成文本，没有幻觉的空间** |
-| 多个判断 | 塞进一个 prompt，互相污染 | **并行评估，互不干扰** |
-| 适用场景 | 通用对话与生成 | **只做判断** |
+| Output shape | Generated text / structured JSON | **Typed fields + probabilities** |
+| Parsing required? | Yes, and you still have to handle malformed output | **No** |
+| Confidence available? | No | **Yes — `confidence` plus a full probability distribution** |
+| Can it hallucinate? | Yes | **It generates no text, so there is no room to hallucinate** |
+| Multiple judgements | Stuffed into one prompt, contaminating each other | **Evaluated in parallel, no interference** |
+| Best fit | General conversation and generation | **Judgement only** |
 
-它有三种问题类型：`Choice`（选择）/ `Noul`（是-否概率）/ `Score`（有序打分）。
-本项目只用到 `Choice`。
+It supports three question types: `Choice`, `Noul` (yes/no probability) and `Score` (ordinal).
+This project only uses `Choice`.
 
-### 3. 请求与响应
+### 3. Request and response
 
-**请求**（`services/router.py` 里的 `_QUESTIONS`）：
+**Request** (the `_QUESTIONS` dict in `services/router.py`):
 
 ```json
 {
@@ -120,22 +129,23 @@ Ollama（qwen2.5:3b 对话 / bge-m3 嵌入）
   "questions": {
     "intent": {
       "type": "choice",
-      "instructions": "这句话应该由哪种方式处理？",
+      "instructions": "Which way should this sentence be handled?",
       "criteria": {
-        "knowledge":  "机器学习的概念、术语、原理、方法相关的问题",
-        "calculator": "需要做数学计算的问题",
-        "weather":    "查询某个地方的天气",
-        "chat":       "闲聊、问候，或与上述都无关的内容"
+        "knowledge":  "A question about machine learning concepts, terminology, principles or methods",
+        "calculator": "A question that requires a mathematical calculation",
+        "weather":    "A question asking about the weather somewhere",
+        "chat":       "Small talk, greetings, or anything unrelated to the above"
       }
     }
   }
 }
 ```
 
-> `criteria` 是**你自己定义的候选集合** —— 它只会在里面选，**选不出第五个**。
-> 这比"让模型自由发挥再解析"稳得多。
+> `criteria` is **the candidate set you define yourself** — the model can only pick from it and
+> **cannot invent a fifth option**. That is far more reliable than letting a model free-form an
+> answer and then parsing it.
 
-**响应**（实测，模型版本 `jev-1.13.0`）：
+**Response** (measured, model version `jev-1.13.0`):
 
 ```json
 {
@@ -152,64 +162,65 @@ Ollama（qwen2.5:3b 对话 / bge-m3 嵌入）
 }
 ```
 
-**整个响应里没有一个字是"生成"的文本** —— 那 45 个 output token 就是标签本身。
+**There is not a single character of generated text in the whole response** — those 45 output tokens
+*are* the label.
 
-| 字段 | 用途 |
+| Field | Use |
 |---|---|
-| `choice` | 选中的分支，**直接可用** |
-| `probabilities` | 每个候选的概率，可用来判断是否在犹豫 |
-| `confidence` | 分布的集中程度（1.0 = 完全确定） |
+| `choice` | The selected branch, **directly usable** |
+| `probabilities` | Per-candidate probability — tells you whether it was hesitating |
+| `confidence` | How concentrated the distribution is (1.0 = completely certain) |
 
-### 4. 集成方式：两级路由
+### 4. Integration: two-tier routing
 
 ```
-用户提问
+User question
    │
    ▼
 ┌──────────────────────────────────────┐
 │ services/router.py                   │
 │                                      │
-│  ① Jev（首选）                        │
-│     confidence ≥ 0.6 → 采用           │
+│  ① Jev (primary)                     │
+│     confidence >= 0.6 → accept       │
 │          │                           │
-│          └─ 失败/低置信度 ──┐          │
+│          └─ failure / low confidence │
 │                            ▼         │
-│  ② 本地关键词规则（兜底）              │
-│     天气词 → weather                  │
-│     计算动词 + 数字 → calculator       │
-│     问候语 → chat                     │
-│     其余 → knowledge                  │
+│  ② Local keyword rules (fallback)    │
+│     weather words  → weather         │
+│     verb + digits  → calculator      │
+│     greetings      → chat            │
+│     everything else → knowledge      │
 └──────────────────────────────────────┘
    │
    ▼  intent
-四条处理路线（knowledge / calculator / weather / chat）
+Four pipelines (knowledge / calculator / weather / chat)
 ```
 
 ```python
 def route(question):
-    intent, confidence = _route_by_jev(question)        # ① Jev 优先
+    intent, confidence = _route_by_jev(question)        # 1. Jev first
     if intent and confidence >= JEV_MIN_CONFIDENCE:
         return intent, confidence
 
-    intent, confidence = _route_by_rules(question)      # ② 本地规则兜底
+    intent, confidence = _route_by_rules(question)      # 2. Local rules as fallback
     return intent, confidence
 ```
 
-**三条设计原则**：
+**Three design principles**:
 
-| 原则 | 说明 |
+| Principle | Explanation |
 |---|---|
-| **低耦合** | Jev **只输出一个标签**，不碰提示词、不碰工具、不碰生成。换主模型、加新工具都不影响它 |
-| **不盲信** | `confidence < 0.6` 时**不采信**，改用规则 —— 宁可不路由，也不错路由 |
-| **降级要降到确定的那一档** | Jev 挂了**绝不退回"三工具 Agent 自主决策"**（成功率仅 1/3），而是退回**永远稳定**的本地规则 |
+| **Loose coupling** | Jev **only outputs a label** — it never touches prompts, tools, or generation. Swapping the main model or adding a tool does not affect it |
+| **No blind trust** | When `confidence < 0.6` we **do not accept** the answer and fall back to rules — better not to route at all than to route wrongly |
+| **Degrade to the tier you are sure about** | If Jev fails we **never** fall back to "a three-tool agent deciding on its own" (only ~1/3 correct). We fall back to the **always-reliable** local rules |
 
-### 5. 效果
+### 5. Results
 
-#### ① 路由准确率：6 / 6，置信度全为 1.0
+#### ① Routing accuracy: 6 / 6, all with confidence 1.0
 
-`check_jev.py` 用 6 个中文问题实测：
+`check_jev.py` tested six Chinese questions:
 
-| 问题 | 期望 | 预测 | 置信度 | 耗时 |
+| Question | Expected | Predicted | Confidence | Latency |
 |---|---|---|---|---|
 | 什么是过拟合 | knowledge | **knowledge** | 1.0 | 1.1s |
 | 正则化有什么作用 | knowledge | **knowledge** | 1.0 | 1.1s |
@@ -218,393 +229,437 @@ def route(question):
 | 你好啊 | chat | **chat** | 1.0 | 1.0s |
 | 模型选择是什么意思 | knowledge | **knowledge** | 1.0 | 1.0s |
 
-结果：**6 / 6 正确**。
+Result: **6 / 6 correct**.
 
-**注意那列置信度 —— 全是 1.0，概率分布里非选项全是 0.0。**
-它不是"猜对了"，是**完全确定**。这和本地 3b 在两个选项间摇摆
-（两边概率接近、argmax 随机翻转）是两回事。
+**Look at that confidence column — all 1.0, and every non-selected probability is 0.0.**
+It is not "guessing right"; it is **completely certain**. That is a different thing from a local 3b
+model oscillating between two options (similar probabilities on both sides, argmax flipping at random).
 
-#### ② 决策这一环：从「概率性」变成「确定性」
+#### ② The decision step: from probabilistic to deterministic
 
-| 能力 | 加 Jev 前（三工具 Agent 自主） | 加 Jev 后 |
+| Capability | Before Jev (agent decides on its own) | After Jev |
 |---|---|---|
-| 走哪条处理链 | 模型临场判断，实测**约 1/3** 正确 | Jev 判断，**6/6** 正确 |
-| 同一问题的结果 | **时对时错**（`temperature=0` 也拦不住） | **每次一致** |
-| 把握程度可见吗 | 不可见 | **`confidence` + 完整概率分布** |
-| 失败时的表现 | **静默选错**，用户完全看不出 | 返回低 confidence，**可被拦截** |
-| 决策耗时 | 混在生成里，无法单独衡量 | 独立 **1.0 ~ 2.3 秒** |
-| 成本 | 0 | 约 **440 token / 次** |
-| 外部依赖 | 无 | **有**（境外服务，需代理） |
+| Which pipeline to take | Judged on the fly, measured **~1/3** correct | Judged by Jev, **6/6** correct |
+| Result for the same question | **Right sometimes, wrong other times** (`temperature=0` does not help) | **Identical every time** |
+| Is certainty visible? | No | **`confidence` plus a full probability distribution** |
+| Behaviour on failure | **Silently picks wrong** — the user cannot tell | Returns low confidence, so it **can be intercepted** |
+| Decision latency | Buried inside generation, cannot be measured separately | **1.0 – 2.3 s** on its own |
+| Cost | 0 | ~**440 tokens per call** |
+| External dependency | None | **Yes** (overseas service, needs a proxy) |
 
-#### ③ 支撑四条路线，直接改善 RAG 可用性
+#### ③ It enables the four pipelines, which directly improves RAG usability
 
-Jev 的决策是"四条路各带一个工具"这个设计的前提 —— 有了它，模型才不需要"三选一"。
+Jev's decision is the precondition for "each route carries one tool".
+With it in place, the model no longer has to make a three-way choice.
 
-| 指标 | 引入前 | 引入后 |
+| Metric | Before | After |
 |---|---|---|
-| knowledge 路线检索率 | **0 / 4** | **100%** |
-| 概念题单次耗时 | ~33 ~ 37s | **19.7s** |
-| 前端「检索知识库」区块 | 时有时无（取决于模型当次是否调工具） | **稳定出现** |
-| 每类问题的提示词 | 一套提示词兼顾所有情况 | **一套只管一件事** |
-| 工具选择出错的可能 | 三选一，约 1/3 出错 | **一对一，选择难度≈0** |
+| Retrieval rate on the knowledge route | **0 / 4** | **100%** |
+| Latency for a concept question | ~33 – 37 s | **19.7 s** |
+| The "knowledge retrieved" block in the UI | Intermittent (depended on whether the model called the tool that time) | **Appears consistently** |
+| Prompts | One prompt covering every case | **One prompt per case** |
+| Chance of picking the wrong tool | Three-way choice, ~1/3 wrong | **One-to-one, near-zero** |
 
-> 说明：knowledge 检索率从 0/4 到 100%，是 **「Jev 路由」+「knowledge 改预检索」两步共同的结果** ——
-> Jev 负责把问题分对路，预检索负责让检索必然发生。两者缺一不可。
+> Note: the jump from 0/4 to 100% in retrieval rate is the combined result of
+> **Jev routing** *and* **rewriting the knowledge route to pre-retrieve** —
+> Jev is responsible for sending the question down the right path, and pre-retrieval is responsible
+> for making retrieval actually happen. Neither works without the other.
 
-#### ④ 端到端实测（`check_e2e.py`，24 / 24 通过）
+#### ④ End-to-end measurements (`check_e2e.py`, 24 / 24 passing)
 
-| 问题 | 命中路线 | 工具内容 | 首字延迟 | 服务端耗时 |
+| Question | Route hit | Tool content | Time to first token | Server-side latency |
 |---|---|---|---|---|
-| 什么是过拟合 | knowledge | 检索 **605 字** | 14.1s | **19.7s** |
+| 什么是过拟合 | knowledge | retrieved **605 chars** | 14.1s | **19.7s** |
 | 请计算 sqrt(16) + 2**8 | calculator | `260.0` | 5.9s | 7.2s |
-| 北京今天天气怎么样 | weather | 实时天气 | 5.7s | 7.4s |
-| 你好啊 | chat | 无工具 | — | ~1s |
+| 北京今天天气怎么样 | weather | live weather | 5.7s | 7.4s |
+| 你好啊 | chat | no tool | — | ~1s |
 
-### 6. 启用方式
+### 6. How to enable it
 
-**不配置也能跑** —— Jev 不可用时会自动降级为本地关键词规则，功能不受影响。
+**It runs without any configuration** — when Jev is unavailable the router automatically degrades to
+local keyword rules and functionality is unaffected.
 
-想启用 Jev 路由：
+To enable Jev routing:
 
 ```powershell
-[Environment]::SetEnvironmentVariable("TYPESAFE_API_KEY", "你的key", "User")
+[Environment]::SetEnvironmentVariable("TYPESAFE_API_KEY", "your-key", "User")
 ```
 
-API key 从 https://console.typesafe.ai 获取（有试用额度）。
+Get an API key from https://console.typesafe.ai (a trial quota is included).
 
-> ⚠️ 两个已知注意点：
-> 1. **设完环境变量必须重启 IDE / 终端** —— 进程只继承启动那一刻的环境快照。
->    否则 `app.py` 会读不到 key，日志里出现 `[router] 未配置 TYPESAFE_API_KEY`。
-> 2. **Jev 是境外服务，需要代理**。若在某个进程里报 `SSLEOFError`，多半是该进程
->    没拿到代理变量（`requests` 只认进程环境变量）。此时会自动降级为本地规则，
->    服务照常工作 —— 这正是不把它放在关键路径上的意义。
+> ⚠️ Two known caveats:
+> 1. **You must restart your IDE / terminal after setting the variable** — a process only inherits
+>    the environment snapshot taken when it started. Otherwise `app.py` will not see the key and the
+>    log will show `[router] 未配置 TYPESAFE_API_KEY`.
+> 2. **Jev is an overseas service and needs a proxy.** If some process reports `SSLEOFError`, it is
+>    almost certainly because that process did not inherit the proxy variables
+>    (`requests` only reads proxy settings from the process environment). The router then degrades to
+>    local rules and the service keeps working — which is precisely the point of not putting it on
+>    the critical path.
 
 ---
 
-## 快速开始
+## Quick start
 
-### 1. 准备模型
+### 1. Pull the models
 
 ```bash
 ollama pull qwen2.5:3b
 ollama pull bge-m3
 ```
 
-### 2. 安装依赖
+### 2. Install dependencies
 
 ```bash
 python -m venv venv
 venv/Scripts/python.exe -m pip install -r requirements.txt
 ```
 
-### 3. 准备知识库
+### 3. Prepare the knowledge base
 
-仓库**不含** PDF（体积原因）。请自行准备一份文本结构良好的 PDF 放入 `knowledge/`。
+The repository **does not include** PDFs (they are large). Put a well-structured PDF into `knowledge/`.
 
-推荐演示用文档：**《动手学深度学习》** —— https://zh-v2.d2l.ai/d2l-zh.pdf
-（配套脚本 `scripts/split_pdf.py` 可按章节拆分大 PDF）
+Recommended demo document: **《动手学深度学习》 (Dive into Deep Learning)** —
+https://zh-v2.d2l.ai/d2l-zh.pdf
+(The bundled `scripts/split_pdf.py` can split a big PDF by chapter.)
 
-然后构建索引（耗时操作，会对每一段调用一次嵌入模型）：
+Then build the index (slow — it calls the embedding model once per chunk):
 
 ```bash
 venv/Scripts/python.exe scripts/build_index.py
 ```
 
-> 用 `RETRIEVE_K` / `page_content` 截断长度这类**检索期**参数改完立即生效；
-> 改 `chunk_size` / `separators` 等**建索引期**参数必须删掉 `.chroma/` 重建。
+> **Retrieval-time** parameters such as `RETRIEVE_K` and the `page_content` truncation length take
+> effect immediately. **Index-time** parameters such as `chunk_size` and `separators` require
+> deleting `.chroma/` and rebuilding.
 
-### 4. 配置 Jev 路由（可选，但推荐）
+### 4. Configure Jev routing (optional, but recommended)
 
-**不配置也能跑** —— Jev 不可用时会自动降级为本地关键词规则，功能不受影响。
+**It runs without this** — if Jev is unavailable the router degrades to local keyword rules and
+functionality is unaffected.
 
-想启用 Jev 路由：
+To enable Jev routing:
 
 ```powershell
-[Environment]::SetEnvironmentVariable("TYPESAFE_API_KEY", "你的key", "User")
+[Environment]::SetEnvironmentVariable("TYPESAFE_API_KEY", "your-key", "User")
 ```
 
-API key 从 https://console.typesafe.ai 获取（有试用额度）。
+Get an API key from https://console.typesafe.ai (a trial quota is included).
 
-> 设完**必须重启 PyCharm / 终端** —— 进程只继承启动那一刻的环境快照。
-> 原理、效果数据与两个已知注意点，见下文《核心特性：Jev 决策路由》。
+> You **must restart PyCharm / your terminal** afterwards — a process only inherits the environment
+> snapshot taken at startup. For the rationale, the measured results and the two known caveats,
+> see *Core feature: Jev decision routing* above.
 
-### 5. 启动服务
+### 5. Start the service
 
 ```bash
 venv/Scripts/python.exe app.py
 ```
 
-浏览器打开 http://127.0.0.1:5023/
+Then open http://127.0.0.1:5023/
 
-### 6. 跑测试
+### 6. Run the tests
 
 ```bash
-# 冒烟测试（不碰 AI 与网络）
+# Smoke tests (no AI, no network)
 venv/Scripts/python.exe -B -m pytest tests/ -v -p no:cacheprovider
 
-# 端到端测试（真机 HTTP + SSE，独立端口 5099，测完自动关）
+# End-to-end tests (real HTTP + SSE, on its own port 5099, shuts down automatically)
 venv/Scripts/python.exe -B check_e2e.py
 ```
 
 ---
 
-## 接口
+## API
 
-| 方法 | 路径 | 说明 |
+| Method | Path | Description |
 |---|---|---|
-| GET | `/` | 前端页面 |
-| POST | `/query` | 非流式问答，返回 `{answer, elapsed, used_agent}` |
-| **POST** | **`/query/stream`** | **流式问答，SSE 事件流** |
-| GET | `/health` | 健康检查 |
+| GET | `/` | Front-end page |
+| POST | `/query` | Non-streaming Q&A, returns `{answer, elapsed, used_agent}` |
+| **POST** | **`/query/stream`** | **Streaming Q&A over SSE** |
+| GET | `/health` | Health check |
 
-**SSE 事件协议**：
+**SSE event protocol**:
 
 ```
 data: {"type": "start"}
-data: {"type": "tool", "name": "search_knowledge", "content": "…检索到的片段…"}
+data: {"type": "tool", "name": "search_knowledge", "content": "...retrieved chunks..."}
 data: {"type": "reset"}
 data: {"type": "token", "text": "过拟合"}
 data: {"type": "done", "elapsed": 19.7}
 ```
 
-| 事件 | 用途 |
+| Event | Purpose |
 |---|---|
-| `tool` | 前端据此渲染「检索知识库」区块 |
-| `reset` | **作废前面已显示的文字**（第一轮 LLM 的过渡语） |
-| `token` | 答案增量 |
+| `tool` | The front end renders the "knowledge retrieved" block from this |
+| `reset` | **Discards text already displayed** (the first LLM round's filler) |
+| `token` | An answer delta |
 
 ---
 
-## 目录结构
+## Directory structure
 
 ```
 agent_remake/
-├── app.py                        入口：create_app() 工厂
-├── config.py                     全部配置（路径已锚定项目根）
-├── README.md
+├── app.py                        Entry point: create_app() factory
+├── config.py                     All configuration (paths anchored to the project root)
+├── README.md                     Chinese README
+├── README_EN.md                  English README (this file)
 ├── requirements.txt
-├── core/                         能力层（禁止 import flask）
-│   ├── llm.py                    模型工厂（唯一创建 LLM 的地方）
-│   ├── prompts.py                四套专用提示词 + SYSTEM_PROMPT 兜底
-│   ├── tools.py                  三个工具
-│   ├── rag.py                    索引构建与检索
-│   └── agent_builder.py          按路线组装 Agent（带缓存）
+├── core/                         Capability layer (must not import flask)
+│   ├── llm.py                    Model factory (the only place LLMs are created)
+│   ├── prompts.py                Four task-specific prompts + SYSTEM_PROMPT fallback
+│   ├── tools.py                  The three tools
+│   ├── rag.py                    Index building and retrieval
+│   └── agent_builder.py          Builds one agent per route (cached)
 ├── services/
-│   ├── router.py                 路由层：Jev + 本地规则
-│   └── qa_service.py             编排层：分发 + 超时 + 降级
+│   ├── router.py                 Routing layer: Jev + local rules
+│   └── qa_service.py             Orchestration: dispatch + timeout + fallback
 ├── web/
-│   ├── routes.py                 蓝图：/ /query /query/stream /health
-│   └── templates/index.html      前端页面（流式渲染 + 耗时徽章）
+│   ├── routes.py                 Blueprint: / /query /query/stream /health
+│   └── templates/index.html      Front-end page (streaming render + elapsed badge)
 ├── scripts/
-│   ├── build_index.py            一次性构建向量索引
-│   ├── split_pdf.py              按章节拆分大 PDF
-│   └── peek_pdf.py               抽查 PDF 文本质量 / 关键词定位
+│   ├── build_index.py            One-off vector index build
+│   ├── split_pdf.py              Split a large PDF by chapter
+│   └── peek_pdf.py               Inspect extracted text quality / locate keywords
 ├── tests/
-│   └── test_smoke.py             冒烟测试（10 个用例）
-├── check_e2e.py                  端到端测试（24 项断言）
-├── check_route.py                路由 + 流式事件回归
-├── check_*.py                    其他开发期诊断脚本（可删）
-├── knowledge/                    放 PDF（不入库）
-└── .chroma/                      向量库（不入库，可重建）
+│   └── test_smoke.py             Smoke tests (10 cases)
+├── check_e2e.py                  End-to-end tests (24 assertions)
+├── check_route.py                Routing + streaming event regression
+├── check_*.py                    Other development-time diagnostic scripts (safe to delete)
+├── knowledge/                    Put PDFs here (not committed)
+└── .chroma/                      Vector store (not committed, rebuildable)
 ```
 
 ---
 
-## 设计要点
+## Design decisions
 
-- **分层铁律**：依赖单向 `web → services → core`，`core/` 内不出现任何 HTTP 代码
-- **路由分层**：Jev 只输出一个标签，不碰提示词、不碰工具、不碰生成（低耦合）；
-  它不可用时退回**本地关键词规则**，而**不是**退回"三工具 Agent 自主决策"——后者成功率仅约 1/3
-- **确定性优先**：凡是代码能确定完成的（检索），就不交给模型判断；
-  模型只做它擅长的（理解语义、从自然语言里抽参数）
-- **单工具路线**：每条路由只挂一个工具，把模型的"三选一"降级成"一对一"
-- **索引离线构建**：向量化是重操作，走 `scripts/build_index.py` 单独执行，绝不放在 Web 请求里
-- **懒加载 + 降级**：索引不存在时 `get_retriever()` 返回 `None`，RAG 降级为"工具不可用"，服务照常启动
-- **工具自吞异常**：异常一旦逃逸会中断整轮 Agent 推理，因此工具必须把错误转成字符串返回
-- **中文切块**：`separators` 显式包含中文标点，并预先清洗 PDF 的"视觉换行"
-- **路径锚定**：所有目录基于 `BASE_DIR = os.path.dirname(os.path.abspath(__file__))`，不依赖当前工作目录
-- **流式不缓存**：token 直接下发，需要作废时发 `reset` 事件（早期"先缓存后补发"的方案会让
-  所有不调工具的回答退化成一次性输出）
+- **One-way layering**: dependencies flow `web → services → core`; no HTTP code inside `core/`
+- **Tiered routing**: Jev only outputs a label — it never touches prompts, tools or generation
+  (loose coupling). When it is unavailable the router falls back to **local keyword rules**, and
+  **not** to "a three-tool agent deciding on its own" — the latter is only ~1/3 accurate
+- **Determinism first**: whatever code can do deterministically (retrieval) is not handed to the
+  model to judge. The model only does what it is good at — understanding semantics and extracting
+  arguments from natural language
+- **Single-tool routes**: each route binds exactly one tool, downgrading the model's "pick one of
+  three" into a "one-to-one match"
+- **Index built offline**: vectorisation is expensive, so it runs via `scripts/build_index.py`
+  separately and never inside a web request
+- **Lazy loading + degradation**: when no index exists, `get_retriever()` returns `None` and RAG
+  degrades to "tool unavailable" while the service still starts normally
+- **Tools swallow their own exceptions**: an escaping exception aborts the whole agent reasoning
+  round, so tools must convert errors into strings
+- **Chinese-aware chunking**: `separators` explicitly includes Chinese punctuation, and PDF
+  "visual line breaks" are cleaned up beforehand
+- **Anchored paths**: every directory is derived from
+  `BASE_DIR = os.path.dirname(os.path.abspath(__file__))` instead of relying on the current working
+  directory
+- **No buffering while streaming**: tokens go out immediately; when something must be retracted we
+  emit a `reset` event (the earlier "buffer first, flush later" approach degraded every answer that
+  did not use a tool into a single dump)
 
 ---
 
-## 开发历程
+## Development history
 
-从 2026-09-20 到 09-22，三天里跨过五道坎。下面按时间记录**改了什么、为什么、结果如何**。
+Five hurdles cleared over three days (2026-09-20 → 09-22).
+Below is what changed, why, and what came of it.
 
-### 阶段一 · 09-20　项目重建（classic → v1）
+### Stage 1 · Sep 20 — Rebuilding the project (classic → v1)
 
-按"依赖倒序"分批重写 13 个文件：
+Thirteen files were rewritten in dependency order:
 
-| 批次 | 文件 |
+| Batch | Files |
 |---|---|
-| 1 | `config.py`、`core/__init__.py`、`core/llm.py`、`core/prompts.py` |
-| 2 | `core/rag.py`、`core/tools.py`、`core/agent_builder.py` |
-| 3 | `services/qa_service.py`、`web/routes.py`、`app.py` |
-| 4 | `requirements.txt`、`tests/test_smoke.py` |
+| 1 | `config.py`, `core/__init__.py`, `core/llm.py`, `core/prompts.py` |
+| 2 | `core/rag.py`, `core/tools.py`, `core/agent_builder.py` |
+| 3 | `services/qa_service.py`, `web/routes.py`, `app.py` |
+| 4 | `requirements.txt`, `tests/test_smoke.py` |
 
-**踩到的三个坑**：
+**Three pitfalls hit along the way**:
 
-| 坑 | 现象 | 根因与解法 |
+| Pitfall | Symptom | Root cause and fix |
 |---|---|---|
-| 模型填反 | `"bge-m3" does not support chat` | `CHAT_MODEL` 与 `EMBED_MODEL` 写反了。**模型分用途，嵌入模型不会对话** |
-| 依赖缺失 | `No module named 'pypdf'` / `'chromadb'` | 补齐依赖 |
-| **相对路径** | `scripts/` 下凭空多出一个空的 `knowledge/` | `KNOWLEDGE_DIR = "knowledge"` 依赖**进程的当前工作目录**（CWD），而 PyCharm 运行时 CWD 是脚本所在目录。改用 `BASE_DIR` 锚定项目根 |
+| Models swapped | `"bge-m3" does not support chat` | `CHAT_MODEL` and `EMBED_MODEL` were written the wrong way round. **Models have specific roles — an embedding model cannot chat** |
+| Missing dependencies | `No module named 'pypdf'` / `'chromadb'` | Installed them |
+| **Relative paths** | An empty `knowledge/` appeared under `scripts/` | `KNOWLEDGE_DIR = "knowledge"` depends on the **process's current working directory**, and PyCharm runs a script with the CWD set to the script's folder. Fixed by anchoring to `BASE_DIR` |
 
-### 阶段二 · 09-20　`llama3.2:1b` 的工具调用不可用
+### Stage 2 · Sep 20 — `llama3.2:1b` is unusable for tool calling
 
-三种失败模式，同一个根源（模型分不清"上下文里的东西"和"自己该做的事"）：
+Three failure modes, all from the same root cause (the model cannot tell "things in the context"
+apart from "what I am supposed to do"):
 
-| # | 现象 |
+| # | Symptom |
 |---|---|
-| 1 | 把参数 **schema 定义**当参数值填进去 |
-| 2 | `content` 里复读工具描述、schema 片段 |
-| 3 | **伪造工具结果**（工具报错后自己编了一个"成功返回"的 JSON） |
+| 1 | Filled the argument **schema definition** in as the argument value |
+| 2 | Echoed tool descriptions and schema fragments inside `content` |
+| 3 | **Fabricated a tool result** (after the tool errored, it invented a "successful" JSON response) |
 
-经联网查证：`llama3.2:1b` **支持** tool calling，但在多工具、需要"构造参数"的场景下不可靠。
-**换 `qwen2.5:3b` 后立刻正常** —— 参数层级正确、工具真正执行、噪声消失。
+Verified online: `llama3.2:1b` **does** support tool calling, but is unreliable with multiple tools
+and when arguments must be *constructed* rather than *extracted*.
+**Switching to `qwen2.5:3b` fixed it immediately** — correct argument nesting, the tool actually ran,
+and the noise disappeared.
 
-> 结论：**模型能力问题要换模型解决，不是改代码解决。**
+> Lesson: **a model capability problem is solved by changing the model, not by changing the code.**
 
-### 阶段三 · 09-22 上午　RAG 质量的三个层次
+### Stage 3 · Sep 22, morning — Three layers of RAG quality
 
-**① 文档层**：检索"什么是过拟合"的相似度分数挤在 0.23~0.32，
-**真正相关的那段只排第二**。加阈值反而会误杀 —— 根因是源文档。
-原 PDF 是**思维导图/卡片式结构**（标题+说明交替、硬换行切断词语），
-换成《动手学深度学习》连续文本后，分数拉开到 **0.43~0.51 且排序正确**。
+**① Document layer.** Similarity scores for "什么是过拟合" were bunched at 0.23–0.32 and
+**the genuinely relevant chunk only ranked second**. Adding a threshold made things *worse* —
+the root cause was the source document. The original PDF was a **mind-map / card layout**
+(alternating titles and blurbs, hard line breaks cutting words apart). Switching to the continuous
+prose of *Dive into Deep Learning* spread the scores to **0.43–0.51 with correct ordering**.
 
-**② 切块层**：句子被切成半截。两个原因：
-`separators` 里 `\n` 排在 `。` 前面（PDF 的行边界不是语义边界）；
-PDF 的**"视觉换行"**把词拆开（"保" / "留"）。
-解法：先清洗视觉换行 → 中文标点提到换行之前 → 过滤 50 字以下的碎片块。
-结果：最短块 12 → **51 字**，三个片段全部在句号处断开，检索分数全面提升。
+**② Chunking layer.** Sentences were being cut in half, for two reasons: `separators` listed `\n`
+before `。` (a PDF line break is not a semantic boundary), and PDF **"visual line breaks"** split
+words apart (`保` / `留`). The fix: clean visual line breaks → move Chinese punctuation ahead of
+newlines → drop fragments shorter than 50 characters.
+Result: the shortest chunk went from 12 to **51 characters**, all three chunks now break at a full
+stop, and retrieval scores improved across the board.
 
-**③ 性能层**：逐段计时定位到瓶颈 —— 生成为 **6.4 token/s**，读输入为 **165.6 token/s**（快 26 倍）。
-→ **杠杆比 26:1，唯一有效的优化是"让模型少写"**。
-加 `num_predict=192`（Ollama 原生硬限制）+ 提示词"200 字以内"，
-回答 338 → 186 字，单次问答 **61s → 33s**。
+**③ Performance layer.** Stage-by-stage timing located the bottleneck: generation ran at
+**6.4 tokens/s** while reading input ran at **165.6 tokens/s** (26× faster).
+→ **The leverage ratio is 26:1, so the only effective optimisation is "make the model write less".**
+Adding `num_predict=192` (an Ollama-level hard cap) plus a "keep it under 200 characters" prompt
+took answers from 338 to 186 characters and a single Q&A from **61s → 33s**.
 
-### 阶段四 · 09-22 上午　工程化
+### Stage 4 · Sep 22, morning — Engineering
 
-- 冒烟测试 `tests/test_smoke.py`：**10/10 通过**（覆盖工具、配置、RAG 清洗、Agent 组装、Web 四层）
-- 首次 Git 提交，仓库：`langchain-v1-agent`
-- 补齐 `README.md`
+- Smoke tests in `tests/test_smoke.py`: **10/10 passing** (covering tools, configuration, RAG text
+  cleaning, agent assembly and the web layer)
+- First Git commit; repository `langchain-v1-agent`
+- Wrote `README.md`
 
-### 阶段五 · 09-22 下午　交互与路由
+### Stage 5 · Sep 22, afternoon — Interaction and routing
 
-**① 前端重做（15 行 → 约 400 行）**
-聊天气泡布局、示例问题、**等待期实时计时器**、耗时徽章（`<8s` 绿 / `<45s` 橙 / `≥45s` 红）、
-模式徽章、检索内容区块。
+**① Front end rebuilt (15 lines → ~400 lines).**
+Chat bubbles, example questions, a **live elapsed counter while waiting**, an elapsed-time badge
+(`<8s` green / `<45s` amber / `≥45s` red), a mode badge, and a retrieved-content block.
 
-**② 流式输出（SSE）**
-先写探路脚本确认 LangGraph `stream_mode=["messages","updates"]` 的返回结构，
-再实现 `/query/stream`。
-关键设计是 `reset` 事件：Agent 有两轮 LLM，第一轮会吐"我查一下资料"这类过渡语，
-检测到 `chunk.tool_call_chunks` 就发 `reset` 让前端清空。
+**② Streaming output (SSE).**
+A probe script first confirmed the return shape of LangGraph's
+`stream_mode=["messages","updates"]`, then `/query/stream` was implemented.
+The key design is the `reset` event: an agent has two LLM rounds and the first one emits filler like
+"let me look that up", so when `chunk.tool_call_chunks` appears we send `reset` and the front end
+clears the bubble.
 
-> 早期方案是"把 token 先缓存，发现调工具就丢弃"，**结果所有不调工具的回答全被缓存**，
-> 流式退化成一次性输出 —— 这个失败方案也值得记住。
+> The earlier approach was "buffer the tokens, discard them if a tool is called" —
+> **which buffered every answer that did not use a tool**, degrading streaming into a single dump.
+> That failed approach is worth remembering too.
 
-**③ Jev 路由**
-`Jev`（TypeSafe System One）是**不做文本生成的决策模型**，只返回带概率的类型化标签。
-实测中文路由 **6/6 正确、置信度全为 1.0**。
-集成后做成两级：Jev 优先，不可用时**退回本地关键词规则**。
+**③ Jev routing.**
+`Jev` (TypeSafe System One) is a **decision model that generates no text** — it returns only typed
+labels with probabilities. Measured Chinese routing accuracy: **6/6, confidence 1.0**.
+The integration is two-tier: Jev first, and **local keyword rules** when it is unavailable.
 
-> 踩坑：`app.py` 从 PyCharm 启动时读不到代理，Jev 报 `SSLEOFError`。
-> 经探测确认 `api.typesafe.ai` 本身可达（经代理返回 405）—— 纯粹是**进程环境快照**问题。
-> 这次故障也证明了"降级链必须降到你确定的那一档"。
+> Pitfall: when `app.py` was started from PyCharm it could not see the proxy and Jev failed with
+> `SSLEOFError`. Probing showed that `api.typesafe.ai` itself was reachable (405 through the proxy) —
+> it was purely a **process environment snapshot** problem. This incident also proved the rule that
+> "you must degrade to the tier you are sure about".
 
-**④ knowledge 路线改预检索（本项目最关键的一次修复）**
+**④ Rewriting the knowledge route to pre-retrieve (the single most important fix in this project)**
 
-四条路线实现后，单工具 knowledge 路线连跑 4 次**全部跳过检索**（0/4），
-答案逐字一致的「知识库中没有找到相关内容」。
+After the four routes were in place, the single-tool knowledge route **skipped retrieval on four
+consecutive runs** (0/4), always producing the identical answer 「知识库中没有找到相关内容」.
 
-**根因**：`KNOWLEDGE_PROMPT` 里有一句
-`资料不足以回答时，明确说明"知识库中没有找到相关内容"` —— 模型推理成
-「要求说回答必须来自资料 → 我手上没有资料 → 按这条输出」→ **跳过了"先去取资料"**。
+**Root cause**: `KNOWLEDGE_PROMPT` contained the line
+`资料不足以回答时，明确说明"知识库中没有找到相关内容"` — the model reasoned:
+"the instructions say answers must come from the material → I have no material → so output that line",
+**skipping the step of fetching the material in the first place**.
 
-**这是同一机制的第三次发作**：
+**This was the third outbreak of the same mechanism**:
 
-| # | 提示词里的那句话 | 模型的反应 |
+| # | The line in the prompt | What the model did |
 |---|---|---|
-| 1 | "工具调用失败就告诉用户**检索失败**" | 直接输出「检索失败」 |
-| 2 | "闲聊…**不要调用工具**" | 从此彻底不调工具 |
-| 3 | "资料不足时说明**知识库中没有找到相关内容**" | 输出这句 + 跳过检索 |
+| 1 | "If a tool call fails, tell the user **检索失败**" | Output 「检索失败」 directly |
+| 2 | "For small talk… **do not call a tool**" | Stopped calling tools entirely |
+| 3 | "When the material is insufficient, say **知识库中没有找到相关内容**" | Output that line *and* skipped retrieval |
 
-> ### 📌 规律
-> **提示词里任何一句"完整、可直接照搬的答复文本"，弱模型都会把它当成当前情况下
-> 可以使用的快捷答案。** 写提示词时必须把它变成**有前置条件、不可独立成立**的表述。
+> ### 📌 The rule
+> **Any "complete, copy-pasteable reply text" in a prompt will be treated by a weak model as a
+> shortcut answer usable in the current situation.** It must be rewritten as a statement that has a
+> precondition and cannot stand on its own.
 
-**解法**：knowledge 路线改走 **代码直接检索 → 推送检索内容 → 裸 LLM + RAG 模板**，
-完全不经过 Agent。模型没有可以"跳过"的空间。
+**The fix**: the knowledge route now goes **code retrieves directly → push the retrieved content →
+bare LLM + RAG template**, bypassing the agent entirely. The model has no room to "skip" anything.
 
-### 各阶段数据对比
+### Data comparison across stages
 
-| 指标 | 初始 | 现在 |
+| Metric | Initial | Now |
 |---|---|---|
-| 工具调用成功率 | ~0%（1b）/ ~33%（3b 三工具） | **100%**（路由 + 单工具） |
-| knowledge 检索率 | 0/4 | **100%** |
-| 单次问答耗时 | 60s 超时（实际 >120s） | **19.7s**（概念题） |
-| 交互 | 等 30 秒一次性出结果 | **逐字流式 + 实时计时器** |
-| 检索可见性 | 只能看日志 | **前端检索区块** |
-| 测试 | 无 | 冒烟 10/10 + **E2E 24/24** |
+| Tool-calling success rate | ~0% (1b) / ~33% (3b, three tools) | **100%** (routing + single tool) |
+| Retrieval rate on the knowledge route | 0/4 | **100%** |
+| Latency per question | 60s timeout (actually >120s) | **19.7s** (concept questions) |
+| Interaction | Wait 30 seconds for a single dump | **Token-by-token streaming + live counter** |
+| Retrieval visibility | Logs only | **Retrieved-content block in the UI** |
+| Tests | None | Smoke 10/10 + **E2E 24/24** |
 
 ---
 
-## 踩坑与经验
+## Lessons learned
 
-1. **先探路再写码**：涉及不确定的框架 API（`stream_mode` 结构、`create_agent` 签名），
-   先写 10 行探路脚本实测，比凭记忆写完再看报错快得多。
+1. **Probe before you code.** For framework APIs you are unsure about (`stream_mode` shapes, the
+   `create_agent` signature), a 10-line probe script beats writing the full implementation from
+   memory and then reading a traceback.
 
-2. **降级链要降到你确定的那一档**：外部依赖挂掉时，退回"成功率 1/3 的老方案"
-   等于没降级。宁可退回一个"能力弱但必然成功"的方案。
+2. **Degrade to the tier you are sure about.** When an external dependency fails, falling back to
+   "the old approach with a 1/3 success rate" is not a fallback at all. Fall back to something weak
+   but guaranteed.
 
-3. **看现象先看耗时**：一次完整的工具调用至少需要 2 次 LLM 调用。
-   **耗时 0.9~2.5 秒的"答案"必然没调工具** —— 这是最省事的判据。
+3. **When something looks wrong, check the latency first.** A complete tool call needs at least two
+   LLM calls. **An "answer" that took 0.9–2.5 seconds definitely did not call a tool** — the
+   cheapest possible diagnostic.
 
-4. **让代码做确定的事，让模型做需要理解的事**：
-   检索不需要判断力（检索词就是问题本身）→ 交给代码；
-   从自然语言里抽参数（城市名、表达式）需要理解 → 交给模型。
+4. **Let code do what is deterministic; let the model do what needs understanding.** Retrieval needs
+   no judgement (the query is the question itself) → give it to code. Extracting arguments from
+   natural language (a city name, an expression) needs understanding → give it to the model.
 
-5. **提示词里的"台词"会被当成答案**（见上文三次发作的规律）。
+5. **"Lines" in a prompt get treated as answers** (see the three outbreaks above).
 
-6. **格式与措辞同等重要**：把工具说明从中文完整句子改成 `- 条件 → 动作` 的箭头列表后，
-   模型反而不再调工具 —— 符号化表达落在小模型的训练分布之外。
+6. **Format matters as much as wording.** After the tool description was changed from full Chinese
+   sentences into a `- condition → action` arrow list, the model *stopped* calling tools — symbolic
+   notation falls outside a small model's training distribution.
 
-7. **达到目标就停手**：性能调到 20 秒满足需求后，不再为省 1 秒牺牲检索质量。
+7. **Stop when you hit the target.** Once performance was good enough at 20 seconds, we stopped
+   trading retrieval quality for another second.
 
-8. **不要为验证而重跑破坏性操作**：`Chroma.from_documents` 对已存在的库是**追加**而非覆盖，
-   重跑 `build_index.py` 会产生重复向量 —— 换文档或换嵌入模型时**必须先删 `.chroma/`**。
+8. **Do not re-run destructive operations just to verify them.** `Chroma.from_documents`
+   **appends** to an existing store rather than overwriting it, so re-running `build_index.py`
+   duplicates vectors — you **must delete `.chroma/` first** when changing documents or embedding
+   models.
 
 ---
 
-## v1 相对 classic 的主要差异
+## How v1 differs from classic
 
-| 维度 | classic | v1 |
+| Dimension | classic | v1 |
 |---|---|---|
-| 创建 Agent | `create_react_agent(llm, tools, prompt)` | `create_agent(model, tools, system_prompt=...)` |
-| 执行器 | `AgentExecutor(agent=..., tools=...)` | 不存在，`create_agent` 返回值直接可执行 |
-| 调用入参 | `{"input": q}` | `{"messages": [{"role": "user", "content": q}]}` |
-| 取结果 | `result["output"]` | `result["messages"][-1].content` |
-| 提示词 | 一大段 ReAct 格式约定 + few-shot 示例 | 每套提示词只描述一件事 |
-| 输出解析 | `ReActSingleInputOutputParser` + `handle_parsing_errors` | 概念消失（模型原生返回 `tool_calls`） |
-| 步数限制 | `max_iterations=4` | `config={"recursion_limit": N}`（N 是图步数，一轮工具调用 = 2 步） |
-| 流式 | `astream_events` | `agent.stream(..., stream_mode=["messages","updates"])` |
-| 底层机制 | 提示词约定文本格式 + 正则解析 | LangGraph 图 + 模型原生结构化输出 |
+| Create the agent | `create_react_agent(llm, tools, prompt)` | `create_agent(model, tools, system_prompt=...)` |
+| Executor | `AgentExecutor(agent=..., tools=...)` | Does not exist; the return value of `create_agent` is directly executable |
+| Call input | `{"input": q}` | `{"messages": [{"role": "user", "content": q}]}` |
+| Read the result | `result["output"]` | `result["messages"][-1].content` |
+| Prompts | One long ReAct format contract + few-shot examples | One prompt per task, each describing a single thing |
+| Output parsing | `ReActSingleInputOutputParser` + `handle_parsing_errors` | The concept disappears (the model returns native `tool_calls`) |
+| Step limit | `max_iterations=4` | `config={"recursion_limit": N}` (N counts graph steps; one tool round = 2 steps) |
+| Streaming | `astream_events` | `agent.stream(..., stream_mode=["messages","updates"])` |
+| Underlying mechanism | Prompt-enforced text format + regex parsing | A LangGraph graph + native structured output from the model |
 
-核心变化：**老路线靠"提示词约定文本格式 → 正则解析"，v1 靠"模型原生返回 `tool_calls`
-结构化字段"**，解析器因此失去存在意义。
+The core shift: **the old path relied on "a prompt-enforced text format → regex parsing", while v1
+relies on "the model returning a native structured `tool_calls` field"** — which is why the parser
+became pointless.
 
-> ⚠️ 但要注意：**v1 对模型的要求高于 classic**。classic 只需模型模仿文本格式，
-> v1 需要模型输出正确的嵌套结构 —— 在 1B 这个量级的模型上，老办法反而更容易工作。
+> ⚠️ But note: **v1 demands more from the model than classic did.** classic only required the model to
+> imitate a text format; v1 requires it to emit correct nested structures — at the 1B scale, the old
+> approach actually works more easily.
 
 ---
 
-## 后续可做
+## Possible next steps
 
-| 方向 | 说明 |
+| Direction | Notes |
 |---|---|
-| **对话记忆** | `create_agent(..., checkpointer=InMemorySaver())` + `config={"configurable": {"thread_id": ...}}`。目前**完全无状态**，"|
-| **引用溯源** | `Document.metadata` 里有 `source` / `page`，拼进资料即可让答案标注"来自第 16 页" |
-| 修复 Jev 代理 | 把代理设为用户级环境变量并重启 IDE，路由即可稳定走 Jev |
-| 换更小模型提速 | `qwen2.5:1.5b` 生成速度约翻倍 |
+| **Conversation memory** | `create_agent(..., checkpointer=InMemorySaver())` + `config={"configurable": {"thread_id": ...}}`. The project is currently **completely stateless**, so elliptical follow-ups like "天津呢" cannot be answered |
+| **Citation tracing** | `Document.metadata` carries `source` and `page`; including them in the material lets answers say "from page 16" |
+| Fix the Jev proxy | Set the proxy as a user-level environment variable and restart the IDE so routing reliably uses Jev |
+| Try a smaller model | `qwen2.5:1.5b` roughly doubles generation speed |
