@@ -15,6 +15,7 @@ def get_chat_llm() -> ChatOllama:
         base_url=config.OLLAMA_BASE_URL,
         temperature=0,      # 确定性输出，减少格式漂移
         num_ctx=4096,       # 上下文窗口：系统提示词 + 工具结果 + 历史
+        num_predict=config.MAX_OUTPUT_TOKENS,  # 硬性限制输出 token 数
     )
 
 

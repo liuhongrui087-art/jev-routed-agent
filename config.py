@@ -11,13 +11,16 @@ CHAT_MODEL = "qwen2.5:3b"      # 对话模型：负责推理与生成，必须�
 EMBED_MODEL = "bge-m3"          # 嵌入模型：文本转向量，中文友好
 
 # --- Agent ---
-AGENT_TIMEOUT = 60              # 1B 冷启动约 3.5s，8 秒必然误判超时
+AGENT_TIMEOUT = 60             # 1B 冷启动约 3.5s，8 秒必然误判超时
 AGENT_MAX_ITERATIONS = 4        # v1 下对应 invoke 的 recursion_limit
+
+# --- 生成控制 ---
+MAX_OUTPUT_TOKENS = 192         # 输出上限。192 token ≈ 320 汉字 ≈ 30 秒
 
 # --- RAG ---
 KNOWLEDGE_DIR = os.path.join(BASE_DIR, "knowledge")   # PDF 存放目录（绝对路径）
 CHROMA_DIR = os.path.join(BASE_DIR, ".chroma")        # 向量库目录（绝对路径）
-RETRIEVE_K = 3                                        # 每次检索返回的片段数
+RETRIEVE_K = 2                                        # 每次检索返回的片段数
 
 # --- Flask ---
 HOST = "127.0.0.1"              # 仅本机可访问，0.0.0.0 会暴露给局域网

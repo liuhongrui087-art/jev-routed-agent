@@ -43,4 +43,4 @@ def search_knowledge(query: str) -> str:
     docs = retriever.invoke(query)
     if not docs:
         return "未检索到相关内容"
-    return "\n---\n".join(d.page_content[:500] for d in docs)
+    return "\n---\n".join(d.page_content[:300] for d in docs)
