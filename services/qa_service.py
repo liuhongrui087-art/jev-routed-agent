@@ -21,6 +21,8 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import config
 from core.agent_builder import get_agent
 from core.llm import get_chat_llm
+from core.prompts import KNOWLEDGE_PROMPT
+from services.router import route
 
 
 def handle_question(question: str) -> dict:
@@ -61,6 +63,32 @@ def handle_question(question: str) -> dict:
     print(f"[qa] q={question[:30]!r} agent_used={used_agent} elapsed={elapsed}s")
     return {"answer": answer, "elapsed": elapsed, "used_agent": used_agent}
 
+def _prefetch_context(question: str):
+    """无条件检索知识库，返回 (给模型看的资料文本, 原始片段列表)。
+
+    用于 knowledge 路线：不让模型决定"要不要查知识库"，直接把资料准备好塞进 prompt。
+    """
+    from core.rag import get_retriever
+
+    retriever = get_retriever()
+    if retriever is None:
+        print("[qa] 预检索跳过：索引不存在")
+        return "", []
+
+    try:
+        docs = retriever.invoke(question)
+    except Exception as e:
+        print("[qa] 预检索失败: " + type(e).__name__ + ": " + str(e))
+        return "", []
+
+    if not docs:
+        return "", []
+
+    context = "\n---\n".join(
+        "[第 " + str(d.metadata.get("page", "?")) + " 页]\n" + d.page_content[:300]
+        for d in docs
+    )
+    return context, docs
 
 def stream_question(question: str):
     """流式回答，逐步 yield 事件字典（供 SSE 使用）。
@@ -83,10 +111,44 @@ def stream_question(question: str):
     t0 = time.time()
     yield {"type": "start"}
 
+    # ---------- 路由 ----------
+    intent, confidence = route(question)
+    print(f"[qa] 路由 = {intent}  置信度 = {confidence}")
+
+    # ---------- knowledge：预检索 + 裸 LLM（不经过 Agent）----------
+    #
+    # 为什么不交给 Agent：实测把"必须先调用 search_knowledge"写成 Agent 提示词后，
+    # qwen2.5:3b 连跑 4 次全部跳过检索（0/4），直接吐出提示词里那句现成的
+    # "知识库中没有找到相关内容"。检索改由代码执行后，模型没有可跳过的空间。
+    if intent == "knowledge":
+        context, docs = _prefetch_context(question)
+        if docs:
+            yield {
+                "type": "tool",
+                "name": "search_knowledge",
+                "content": "\n---\n".join(d.page_content[:300] for d in docs),
+            }
+            print(f"[qa] 预检索命中 {len(docs)} 段，上下文 {len(context)} 字")
+            try:
+                prompt = KNOWLEDGE_PROMPT.format(context=context, question=question)
+                for chunk in get_chat_llm().stream(prompt):
+                    text = getattr(chunk, "content", "") or ""
+                    if text:
+                        yield {"type": "token", "text": text}
+            except Exception as e:
+                yield {"type": "error", "message": f"{type(e).__name__}: {e}"}
+            yield {"type": "done", "elapsed": round(time.time() - t0, 1)}
+            return
+        print("[qa] 预检索无结果，退回 fallback Agent")
+
+    # ---------- 其余路线（calculator / weather / chat / 兜底）继续走 Agent ----------
+    route_name = intent if intent in ("calculator", "weather", "chat") else "fallback"
+    print(f"[qa] 采用路线 = {route_name}")
+
     tool_started = False
 
     try:
-        for mode, payload in get_agent().stream(
+        for mode, payload in get_agent(route_name).stream(
             {"messages": [{"role": "user", "content": question}]},
             config={"recursion_limit": config.AGENT_MAX_ITERATIONS * 2},
             stream_mode=["messages", "updates"],     # messages 拿 token，updates 拿工具结果

@@ -26,3 +26,5 @@ RETRIEVE_K = 2                                        # 每次检索返回的片
 HOST = "127.0.0.1"              # 仅本机可访问，0.0.0.0 会暴露给局域网
 PORT = 5023
 DEBUG = True
+# --- 路由（TypeSafe Jev 决策模型）---
+TYPESAFE_API_KEY = os.environ.get("TYPESAFE_API_KEY", "")
