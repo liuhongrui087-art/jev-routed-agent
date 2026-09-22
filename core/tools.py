@@ -21,7 +21,7 @@ def calculator(expression: str) -> str:
 
 @tool
 def get_weather(city: str) -> str:
-    """查询城市实时天气。city 是城市名，中英文均可，例如 '北京' 或 'Beijing'。"""
+    """查询城市实时天气。city 是城市名，中英文均可。"""
     try:
         resp = requests.get(f"https://wttr.in/{city}?format=3&lang=zh", timeout=8)
         if resp.status_code == 200:

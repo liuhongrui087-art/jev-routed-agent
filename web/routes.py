@@ -20,8 +20,12 @@ def query():
     if not question:
         return jsonify({"error": "question 不能为空"}), 400
 
-    answer = handle_question(question)
-    return jsonify({"answer": answer})
+    result = handle_question(question)
+    return jsonify({
+        "answer": result["answer"],
+        "elapsed": result["elapsed"],
+        "used_agent": result["used_agent"],
+    })
 
 
 @bp.route("/health", methods=["GET"])

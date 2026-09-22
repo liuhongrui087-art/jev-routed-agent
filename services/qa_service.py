@@ -23,7 +23,16 @@ from core.agent_builder import get_agent
 from core.llm import get_chat_llm
 
 
-def handle_question(question: str) -> str:
+def handle_question(question: str) -> dict:
+    """回答一个问题，并返回本次调用的元信息。
+
+    返回：
+        {
+            "answer":     str,    # 回答正文
+            "elapsed":    float,  # 服务端耗时（秒，1 位小数）
+            "used_agent": bool,   # False 表示走了降级（超时或异常）
+        }
+    """
     t0 = time.time()
     llm = get_chat_llm()
     used_agent = True
@@ -48,5 +57,6 @@ def handle_question(question: str) -> str:
     finally:
         executor.shutdown(wait=False)   # 不等后台任务，超时立即返回
 
-    print(f"[qa] q={question[:30]!r} agent_used={used_agent} elapsed={time.time() - t0:.1f}s")
-    return answer
+    elapsed = round(time.time() - t0, 1)
+    print(f"[qa] q={question[:30]!r} agent_used={used_agent} elapsed={elapsed}s")
+    return {"answer": answer, "elapsed": elapsed, "used_agent": used_agent}

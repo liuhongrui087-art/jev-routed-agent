@@ -1,15 +1,404 @@
-<form id="f"><input id="q"><button>提问</button></form>
-<div id="a"></div>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>机器学习知识助手</title>
+<style>
+  :root {
+    --bg: #f5f7fa;
+    --card: #ffffff;
+    --border: #e6e9ef;
+    --text: #1f2329;
+    --text-dim: #8a9099;
+    --accent: #2f6fed;
+    --accent-soft: #eef3fe;
+    --ok: #16a34a;
+    --radius: 14px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.7;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    overflow: hidden;
+  }
+
+  .app {
+    width: 100%;
+    max-width: 820px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+  }
+
+  /* ---------- 顶栏 ---------- */
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 16px 24px;
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .logo {
+    width: 40px; height: 40px; flex-shrink: 0;
+    border-radius: 11px;
+    background: var(--accent);
+    color: #fff;
+    display: grid; place-items: center;
+  }
+  .titles { min-width: 0; }
+  .titles h1 { font-size: 15px; font-weight: 600; letter-spacing: .2px; }
+  .titles p {
+    font-size: 12px; color: var(--text-dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .status {
+    font-size: 12px; color: var(--ok); flex-shrink: 0;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .status::before {
+    content: ""; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--ok);
+    box-shadow: 0 0 0 3px rgba(22, 163, 74, .15);
+  }
+
+  /* ---------- 消息区 ---------- */
+  .chat {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    scroll-behavior: smooth;
+  }
+  .chat::-webkit-scrollbar { width: 8px; }
+  .chat::-webkit-scrollbar-thumb { background: #d7dce4; border-radius: 4px; }
+  .chat::-webkit-scrollbar-thumb:hover { background: #c2c9d4; }
+
+  /* ---------- 空状态 ---------- */
+  .empty { margin: auto; text-align: center; max-width: 480px; padding: 20px 0; }
+  .empty-title { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
+  .empty-sub { font-size: 13px; color: var(--text-dim); }
+  .chips {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    justify-content: center; margin-top: 22px;
+  }
+  .chips button {
+    font: inherit; font-size: 13px;
+    padding: 7px 14px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    border-radius: 999px;
+    color: var(--text);
+    cursor: pointer;
+    transition: .15s;
+  }
+  .chips button:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  /* ---------- 消息气泡 ---------- */
+  .msg { display: flex; flex-direction: column; max-width: 86%; }
+  .msg.user { align-self: flex-end; align-items: flex-end; }
+  .msg.bot { align-self: flex-start; align-items: flex-start; }
+
+  .bubble {
+    padding: 12px 16px;
+    border-radius: var(--radius);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .user .bubble {
+    background: var(--accent);
+    color: #fff;
+    border-bottom-right-radius: 4px;
+  }
+  .bot .bubble {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: 4px;
+  }
+
+  /* ---------- 元信息徽章 ---------- */
+  .meta { display: flex; align-items: center; gap: 6px; margin-top: 8px; padding-left: 2px; }
+  .badge {
+    font-size: 11.5px;
+    font-family: ui-monospace, Consolas, "Courier New", monospace;
+    padding: 2px 9px;
+    border-radius: 999px;
+    background: #f0f2f6;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .badge.fast { background: #e9f8ef; color: #15803d; border-color: #cdebd8; }
+  .badge.slow { background: #fff6e6; color: #b45309; border-color: #f5e0bd; }
+  .badge.vslow { background: #fdecec; color: #b91c1c; border-color: #f5cdcd; }
+  .badge.agent { background: var(--accent-soft); color: #1d4ed8; border-color: #d3e0fb; }
+  .badge.fallback { background: #fdecec; color: #b91c1c; border-color: #f5cdcd; }
+
+  /* ---------- 思考中 ---------- */
+  .thinking { display: flex; align-items: center; gap: 10px; color: var(--text-dim); }
+  .dots { display: inline-flex; gap: 4px; flex-shrink: 0; }
+  .dots i {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor;
+    animation: blink 1.2s infinite;
+  }
+  .dots i:nth-child(2) { animation-delay: .2s; }
+  .dots i:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 60%, 100% { opacity: .25 } 30% { opacity: 1 } }
+
+  /* ---------- 输入区 ---------- */
+  .composer {
+    padding: 16px 24px 22px;
+    background: var(--card);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .composer form {
+    display: flex; align-items: flex-end; gap: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 8px 8px 14px;
+    transition: .15s;
+  }
+  .composer form:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(47, 111, 237, .1);
+  }
+  #input {
+    flex: 1;
+    border: 0; outline: 0; resize: none;
+    font: inherit; color: inherit; background: transparent;
+    max-height: 120px;
+    padding: 6px 0;
+  }
+  #input::placeholder { color: #aab1bb; }
+  #send {
+    width: 36px; height: 36px; flex-shrink: 0;
+    border: 0; border-radius: 10px;
+    background: var(--accent); color: #fff;
+    display: grid; place-items: center;
+    cursor: pointer; transition: .15s;
+  }
+  #send:hover:not(:disabled) { background: #2560d8; }
+  #send:disabled { background: #c3cbd8; cursor: not-allowed; }
+
+  @media (max-width: 600px) {
+    .topbar, .chat, .composer { padding-left: 14px; padding-right: 14px; }
+    .msg { max-width: 94%; }
+    .titles p { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2 4 6v6c0 5 3.4 8.6 8 10 4.6-1.4 8-5 8-10V6l-8-4z"/>
+          <path d="M9 12l2 2 4-4"/>
+        </svg>
+      </div>
+      <div class="titles">
+        <h1>机器学习知识助手</h1>
+        <p>LangChain v1 · qwen2.5:3b · 本地知识库 RAG</p>
+      </div>
+    </div>
+    <span class="status">就绪</span>
+  </header>
+
+  <main class="chat" id="chat">
+    <div class="empty" id="empty">
+      <p class="empty-title">问我关于机器学习的问题</p>
+      <p class="empty-sub">回答会先从本地知识库检索资料，再基于资料作答</p>
+      <div class="chips" id="chips">
+        <button data-q="什么是过拟合">什么是过拟合</button>
+        <button data-q="正则化有什么作用">正则化有什么作用</button>
+        <button data-q="请计算 sqrt(16) + 2**8">计算 sqrt(16) + 2**8</button>
+        <button data-q="北京今天天气怎么样">北京今天天气</button>
+      </div>
+    </div>
+  </main>
+
+  <footer class="composer">
+    <form id="form">
+      <textarea id="input" rows="1" placeholder="输入问题，Enter 发送，Shift + Enter 换行"></textarea>
+      <button type="submit" id="send" title="发送">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 2 11 13"/>
+          <path d="M22 2l-7 20-4-9-9-4 20-7z"/>
+        </svg>
+      </button>
+    </form>
+  </footer>
+
+</div>
+
 <script>
-document.getElementById('f').onsubmit = async (e) => {
-  e.preventDefault();
-  const question = document.getElementById('q').value;
-  const r = await fetch('/query', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},   // ← 少了这行后端收不到 JSON
-    body: JSON.stringify({question})
+  const chat = document.getElementById('chat');
+  const emptyState = document.getElementById('empty');
+  const form = document.getElementById('form');
+  const input = document.getElementById('input');
+  const sendBtn = document.getElementById('send');
+
+  let busy = false;
+
+  function scrollDown() {
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  // 用 HTML 字符串造一个元素，避免到处写 createElement
+  function make(html) {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html.trim();
+    return tpl.content.firstElementChild;
+  }
+
+  function addUser(text) {
+    const node = make('<div class="msg user"><div class="bubble"></div></div>');
+    node.querySelector('.bubble').textContent = text;
+    chat.appendChild(node);
+    scrollDown();
+  }
+
+  function addThinking() {
+    const node = make(
+      '<div class="msg bot">' +
+        '<div class="bubble thinking">' +
+          '<span class="dots"><i></i><i></i><i></i></span>' +
+          '<span>正在检索知识库并生成回答</span>' +
+        '</div>' +
+        '<div class="meta"><span class="badge" data-timer>0.0s</span></div>' +
+      '</div>'
+    );
+    chat.appendChild(node);
+    scrollDown();
+    return node;
+  }
+
+  // 按耗时给徽章上色：快 / 慢 / 超慢
+  function speedClass(sec) {
+    if (sec < 8) return 'fast';
+    if (sec < 45) return 'slow';
+    return 'vslow';
+  }
+
+  function buildAnswer(text, data) {
+    const node = make('<div class="msg bot"><div class="bubble"></div><div class="meta"></div></div>');
+    node.querySelector('.bubble').textContent = text;
+    const meta = node.querySelector('.meta');
+
+    if (data && typeof data.elapsed === 'number') {
+      const t = document.createElement('span');
+      t.className = 'badge ' + speedClass(data.elapsed);
+      t.textContent = '耗时 ' + data.elapsed.toFixed(1) + 's';
+      meta.appendChild(t);
+    }
+
+    if (data && typeof data.used_agent === 'boolean') {
+      const m = document.createElement('span');
+      m.className = 'badge ' + (data.used_agent ? 'agent' : 'fallback');
+      m.textContent = data.used_agent ? 'Agent 模式' : '降级回答';
+      meta.appendChild(m);
+    }
+
+    return node;
+  }
+
+  async function ask(question) {
+    if (busy) return;
+    busy = true;
+    sendBtn.disabled = true;
+
+    if (emptyState && emptyState.parentNode) emptyState.remove();
+
+    addUser(question);
+    const thinking = addThinking();
+
+    // 等待期间实时跳动，避免用户以为页面卡死
+    const timerEl = thinking.querySelector('[data-timer]');
+    const t0 = performance.now();
+    const timer = setInterval(() => {
+      timerEl.textContent = ((performance.now() - t0) / 1000).toFixed(1) + 's';
+    }, 100);
+
+    try {
+      const resp = await fetch('/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: question })
+      });
+      const data = await resp.json();
+      clearInterval(timer);
+
+      if (!resp.ok) {
+        thinking.replaceWith(buildAnswer(data.error || ('请求失败 HTTP ' + resp.status), null));
+      } else {
+        thinking.replaceWith(buildAnswer(data.answer, data));
+      }
+    } catch (err) {
+      clearInterval(timer);
+      thinking.replaceWith(buildAnswer('网络错误：' + err.message, null));
+    } finally {
+      busy = false;
+      sendBtn.disabled = false;
+      input.focus();
+      scrollDown();
+    }
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    const q = input.value.trim();
+    if (!q || busy) return;
+    input.value = '';
+    input.style.height = 'auto';
+    ask(q);
   });
-  const data = await r.json();
-  document.getElementById('a').textContent = data.answer || data.error;
-};
+
+  // Enter 发送，Shift + Enter 换行
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  // 输入框随内容长高（上限 120px）
+  input.addEventListener('input', function () {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+  });
+
+  // 示例问题
+  document.getElementById('chips').addEventListener('click', function (e) {
+    const btn = e.target.closest('button[data-q]');
+    if (btn) ask(btn.dataset.q);
+  });
+
+  input.focus();
 </script>
+</body>
+</html>
